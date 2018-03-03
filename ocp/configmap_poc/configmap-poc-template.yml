@@ -1,0 +1,146 @@
+# ConfigMap POC
+# Mike Battles (mbattles@redhat.com) - 03/03/18
+
+# This POC details various methods for using ConfigMap & Secrets
+
+# Option 1 - Export all ConfigMap keys as enviroment variables
+# Option 2 - Export all Secret keys as enviroment variables
+# Option 3 - Mount sensitive files via secret
+# Option 4 - Create a configmap from existing property files
+
+# Use process-template.sh to execute this
+
+apiVersion: v1
+kind: Template
+labels:
+  release: v1
+  template: configmap-poc
+metadata:
+  name: "configmap-poc"
+  annotations:
+    description: 'Demostrate usage of ConfigMaps with env variables and real files'
+objects:
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    name: configmap-poc
+    labels:
+      app: configmap-poc
+  spec:
+    replicas: 1
+    selector:
+      app: configmap-poc
+    strategy:
+      type: Recreate
+    triggers:
+      - type: ConfigChange
+    template:
+      metadata:
+        labels:
+          app: configmap-poc
+      spec:
+        containers:
+          - name: app
+            image: rhel7/rhel
+            imagePullPolicy: Always
+            command: ["sh", "-c"]
+            args:
+            - >
+              while true;
+              do echo "***" ; env | grep POC;
+              find /etc/volumeMounts -maxdepth 2 -type l -not -path '*/\..*' -printf '\n\n%h\n' -exec sha256sum {} \;  -path '*.properties' -exec cat {} \; ;
+              sleep 30;
+              done
+            envFrom:
+            - configMapRef:
+                name: env-configmap
+            - secretRef:
+                name: env-secrets
+            volumeMounts:
+              - name: mounted-secret
+                mountPath: /etc/volumeMounts/secrets
+              - name: mounted-configmap
+                mountPath: /etc/volumeMounts/properties
+        volumes:
+          - name: mounted-secret
+            secret:
+              secretName: file-secrets
+          - name: mounted-configmap
+            configMap:
+              name: files-configmap
+
+
+
+# Option 1 - Export all ConfigMap keys as enviroment variables
+# all of these data keys will be exposed to the container via the envFrom command
+
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: env-configmap
+  data:
+    POC_APP_NAME: configmap-poc
+    POC_APP_ENV: production
+
+
+# Option 2 - Export all Secret keys as enviroment variables
+# The keys specified under stringData will be converted into base64 Opaque tokens.  Only users & service accounts with appropriate
+# access can view these values.
+
+# TIP: On production servers, these variables should be parameterized with the config files being encrypted.
+# For C2SB, they can be stored in config.yml and encrypted using "c2sb encrypt" which uses ansible-vault for AES256 encryption.
+#
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: env-secrets
+  stringData:
+    POC_DB_PASSWORD: db_password
+    POC_AMQ_PASSWORD: redis_password
+
+# Option 3 - Mount sensitive files via secret
+
+# Each data key will be mounted into the container as a single file at the location specified by
+#  volume mounts (e.g. /opt/volumeMount/secret
+
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: file-secrets
+  data:
+    test_file: "${TEST_FILE_BASE64}"
+
+# Option 4 - Create a configmap from existing property files
+
+# This template is the same as option 3, however if you have a directory of property files there is a
+# oc command that can automate it.  This below example was generated from :
+#  oc create configmap files-configmap --from-file=files/ --dry-run=true -o yaml
+#
+# This output can be then be pasted into the template file and properly indented.  These config maps are
+# then mounted into the directory specfied by the volumesMount.
+#
+# see https://docs.openshift.org/latest/dev_guide/configmaps.html#configmaps-creating-from-directories
+
+- apiVersion: v1
+  data:
+    misc.properties: |
+      one.fish=redfish
+      two.fish=${ANOTHER_PARAMETER}
+    strings.properties: |
+      hello.english=how are you doing
+      hello.spanish=mucho gusto
+  kind: ConfigMap
+  metadata:
+    creationTimestamp: null
+    name: files-configmap
+
+parameters:
+
+- name: ANOTHER_PARAMETER
+  required: false
+  value: "bluefish"
+
+- name: TEST_FILE_BASE64
+  required: false
+  value: "Cj4+IFRoaXMgaXMgdGhlIHRlc3QgZmlsZSA+PgoK"
+
